@@ -17,21 +17,8 @@ import {
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Plus, Search, Edit, Trash2, Tag, LogOut, BookOpen } from "lucide-react"
-
-interface Note {
-  id: string
-  title: string
-  content: string
-  tags: string[]
-  createdAt: string
-  updatedAt: string
-}
-
-interface User {
-  id: string
-  name: string
-  email: string
-}
+import { supabase, type Note } from "@/lib/supabase"
+import type { User } from "@supabase/supabase-js"
 
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null)
@@ -41,123 +28,135 @@ export default function DashboardPage() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [editingNote, setEditingNote] = useState<Note | null>(null)
   const [newNote, setNewNote] = useState({ title: "", content: "", tags: "" })
+  const [loading, setLoading] = useState(true)
   const router = useRouter()
 
   useEffect(() => {
-    const token = localStorage.getItem("token")
-    const userData = localStorage.getItem("user")
+    checkUser()
+  }, [])
 
-    if (!token || !userData) {
-      router.push("/auth/login")
-      return
-    }
-
-    setUser(JSON.parse(userData))
-    loadNotes()
-  }, [router])
-
-  const loadNotes = async () => {
+  const checkUser = async () => {
     try {
-      const response = await fetch("/api/notes", {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      })
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
 
-      if (response.ok) {
-        const data = await response.json()
-        setNotes(data.notes)
+      if (!user) {
+        router.push("/auth/login")
+        return
       }
+
+      setUser(user)
+      await loadNotes(user.id)
     } catch (error) {
-      console.error("Failed to load notes:", error)
+      console.error("Error checking user:", error)
+      router.push("/auth/login")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadNotes = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+
+      if (error) {
+        console.error("Error loading notes:", error)
+        return
+      }
+
+      setNotes(data || [])
+    } catch (error) {
+      console.error("Error loading notes:", error)
     }
   }
 
   const handleCreateNote = async () => {
-    if (!newNote.title.trim()) return
+    if (!newNote.title.trim() || !user) return
 
     try {
-      const response = await fetch("/api/notes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-        body: JSON.stringify({
-          title: newNote.title,
-          content: newNote.content,
-          tags: newNote.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter((tag) => tag),
-        }),
-      })
+      const { data, error } = await supabase
+        .from("notes")
+        .insert([
+          {
+            title: newNote.title.trim(),
+            content: newNote.content,
+            tags: newNote.tags
+              .split(",")
+              .map((tag) => tag.trim())
+              .filter((tag) => tag),
+            user_id: user.id,
+          },
+        ])
+        .select()
+        .single()
 
-      if (response.ok) {
-        const data = await response.json()
-        setNotes([data.note, ...notes])
-        setNewNote({ title: "", content: "", tags: "" })
-        setIsCreateDialogOpen(false)
-      } else {
-        console.error("Failed to create note")
+      if (error) {
+        console.error("Error creating note:", error)
+        return
       }
+
+      setNotes([data, ...notes])
+      setNewNote({ title: "", content: "", tags: "" })
+      setIsCreateDialogOpen(false)
     } catch (error) {
       console.error("Error creating note:", error)
     }
   }
 
   const handleEditNote = async () => {
-    if (!editingNote) return
+    if (!editingNote || !user) return
 
     try {
-      const response = await fetch(`/api/notes/${editingNote.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-        body: JSON.stringify({
+      const { data, error } = await supabase
+        .from("notes")
+        .update({
           title: editingNote.title,
           content: editingNote.content,
           tags: editingNote.tags,
-        }),
-      })
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", editingNote.id)
+        .eq("user_id", user.id)
+        .select()
+        .single()
 
-      if (response.ok) {
-        const data = await response.json()
-        const updatedNotes = notes.map((note) => (note.id === editingNote.id ? data.note : note))
-        setNotes(updatedNotes)
-        setEditingNote(null)
-      } else {
-        console.error("Failed to update note")
+      if (error) {
+        console.error("Error updating note:", error)
+        return
       }
+
+      const updatedNotes = notes.map((note) => (note.id === editingNote.id ? data : note))
+      setNotes(updatedNotes)
+      setEditingNote(null)
     } catch (error) {
       console.error("Error updating note:", error)
     }
   }
 
   const handleDeleteNote = async (noteId: string) => {
-    try {
-      const response = await fetch(`/api/notes/${noteId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
-        },
-      })
+    if (!user) return
 
-      if (response.ok) {
-        setNotes(notes.filter((note) => note.id !== noteId))
-      } else {
-        console.error("Failed to delete note")
+    try {
+      const { error } = await supabase.from("notes").delete().eq("id", noteId).eq("user_id", user.id)
+
+      if (error) {
+        console.error("Error deleting note:", error)
+        return
       }
+
+      setNotes(notes.filter((note) => note.id !== noteId))
     } catch (error) {
       console.error("Error deleting note:", error)
     }
   }
 
-  const handleLogout = () => {
-    localStorage.removeItem("token")
-    localStorage.removeItem("user")
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
     router.push("/")
   }
 
@@ -171,8 +170,19 @@ export default function DashboardPage() {
 
   const allTags = Array.from(new Set(notes.flatMap((note) => note.tags)))
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <BookOpen className="h-12 w-12 mx-auto text-blue-600 mb-4 animate-pulse" />
+          <p className="text-gray-600">Loading your notes...</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!user) {
-    return <div>Loading...</div>
+    return null
   }
 
   return (
@@ -185,7 +195,7 @@ export default function DashboardPage() {
               <h1 className="text-2xl font-bold text-gray-900">My Notes</h1>
             </div>
             <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-600">Welcome, {user.name}</span>
+              <span className="text-sm text-gray-600">Welcome, {user.user_metadata?.full_name || user.email}</span>
               <Button variant="outline" size="sm" onClick={handleLogout}>
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
@@ -301,7 +311,7 @@ export default function DashboardPage() {
                     <div className="flex justify-between items-start">
                       <div>
                         <CardTitle className="text-lg">{note.title}</CardTitle>
-                        <CardDescription>{new Date(note.createdAt).toLocaleDateString()}</CardDescription>
+                        <CardDescription>{new Date(note.created_at).toLocaleDateString()}</CardDescription>
                       </div>
                       <div className="flex gap-2">
                         <Button variant="ghost" size="sm" onClick={() => setEditingNote(note)}>
